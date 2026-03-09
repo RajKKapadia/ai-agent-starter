@@ -1,25 +1,32 @@
 {
-	"scripts": {
-		"dev": "tsx watch --env-file=.env.local --clear-screen=false ./src/index.ts",
-		"build": "tsc",
-		"start": "node ./dist/index.js",
-		"db:push": "drizzle-kit push",
-		"db:studio": "drizzle-kit studio"
-	},
-	"dependencies": {
-		"@openai/agents": "^0.5.4",
-		"dotenv": "^17.3.1",
-		"drizzle-orm": "^0.45.1",
-		"express": "^5.2.1",
-		"ioredis": "^5.10.0",
-		"postgres": "^3.4.8",
-		"uuid": "^13.0.0",
-		"zod": "^4.3.6"
-	},
-	"devDependencies": {
-		"@types/express": "^5.0.6",
-		"drizzle-kit": "^0.31.9",
-		"tsx": "^4.21.0",
-		"typescript": "^5.9.3"
-	}
+  "scripts": {
+    "dev": "tsx watch --env-file=.env.local --clear-screen=false ./src/index.ts",
+    "build": "tsc",
+    "start": "node ./dist/index.js",
+    "test": "node ./tests/run-tests.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.5.4",
+    "dotenv": "^17.3.1",
+    "drizzle-orm": "^0.45.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.10.0",
+    "postgres": "^3.4.8",
+    "uuid": "^13.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/express": "^5.0.6",
+    "drizzle-kit": "^0.31.9",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.26.0"
+  }
 }

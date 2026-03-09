@@ -1,44 +1,63 @@
 import { config } from 'dotenv';
+import { z } from 'zod';
 
-// Load environment variables
 config({ path: '.env.local' });
 
-// Export configuration with proper typing and defaults
-export const appConfig = {
-    PORT: parseInt(process.env.PORT || '8080', 10),
-    NODE_ENV: process.env.NODE_ENV || 'development',
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
-    DATABASE_URL: process.env.DATABASE_URL || '',
-    REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
-    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
-    TELEGRAM_X_SECRET_KEY: process.env.TELEGRAM_X_SECRET_KEY || '',
-    OPENWEATHERMAP_API_KEY: process.env.OPENWEATHERMAP_API_KEY || ''
-} as const;
+const requiredKeys = [
+    'OPENAI_API_KEY',
+    'OPENWEATHERMAP_API_KEY',
+    'DATABASE_URL',
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_X_SECRET_KEY',
+] as const;
 
-// Validation function (optional - can be called at startup)
-export const validateConfig = (): boolean => {
-    const errors: string[] = [];
+const appConfigSchema = z.object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().positive().default(3000),
+    OPENAI_API_KEY: z.string(),
+    OPENWEATHERMAP_API_KEY: z.string(),
+    DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
+    REDIS_URL: z.string().url('REDIS_URL must be a valid URL'),
+    TELEGRAM_BOT_TOKEN: z.string(),
+    TELEGRAM_X_SECRET_KEY: z.string(),
+});
 
-    if (!appConfig.OPENAI_API_KEY) {
-        errors.push('OPENAI_API_KEY is not set');
+export type AppConfig = z.infer<typeof appConfigSchema>;
+
+let cachedConfig: AppConfig | undefined;
+
+export function buildAppConfig(env: NodeJS.ProcessEnv): AppConfig {
+    const normalizedEnv: NodeJS.ProcessEnv = {
+        ...env,
+        REDIS_URL: env.REDIS_URL || (env.NODE_ENV === 'production' ? undefined : 'redis://localhost:6379'),
+    };
+
+    const missing = requiredKeys.filter((key) => !normalizedEnv[key] || String(normalizedEnv[key]).trim() === '');
+    if (missing.length > 0) {
+        throw new Error(`Invalid application configuration: ${missing.map((key) => `${key} is required`).join('; ')}`);
     }
 
-    if (!appConfig.DATABASE_URL) {
-        errors.push('DATABASE_URL is not set');
+    if (!normalizedEnv.REDIS_URL) {
+        throw new Error('Invalid application configuration: REDIS_URL is required');
     }
 
-    if (!appConfig.TELEGRAM_BOT_TOKEN) {
-        errors.push('TELEGRAM_BOT_TOKEN is not set - Telegram webhook will not work');
+    const result = appConfigSchema.safeParse(normalizedEnv);
+    if (!result.success) {
+        const issues = result.error.issues.map((issue) => issue.message).join('; ');
+        throw new Error(`Invalid application configuration: ${issues}`);
     }
 
-    if (!appConfig.TELEGRAM_X_SECRET_KEY) {
-        errors.push('TELEGRAM_X_SECRET_KEY is not set - webhook will be unprotected');
+    return result.data;
+}
+
+export function getAppConfig(): AppConfig {
+    if (!cachedConfig) {
+        cachedConfig = buildAppConfig(process.env);
     }
 
-    if (errors.length > 0) {
-        console.warn('⚠️  Configuration warnings:');
-        errors.forEach(error => console.warn(`   - ${error}`));
-    }
+    return cachedConfig;
+}
 
-    return errors.length === 0;
-};
+export function validateConfig(): AppConfig {
+    return getAppConfig();
+}

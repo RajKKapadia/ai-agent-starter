@@ -1,10 +1,23 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { appConfig } from '../env';
-import * as schema from '../drizzle/schema';
 
-// Create postgres client
-const client = postgres(appConfig.DATABASE_URL as string);
+import { getAppConfig } from '../env';
+import * as schema from './schema';
 
-// Create drizzle instance with the client
-export const db = drizzle(client, { logger: true, schema: schema });
+const config = getAppConfig();
+const client = postgres(config.DATABASE_URL, { max: 1 });
+
+export const db = drizzle(client, { logger: config.NODE_ENV === 'development', schema });
+
+export async function checkDatabaseHealth(): Promise<boolean> {
+    try {
+        await client`select 1`;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function closeDatabase(): Promise<void> {
+    await client.end();
+}

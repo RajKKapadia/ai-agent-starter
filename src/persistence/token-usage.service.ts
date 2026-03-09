@@ -1,6 +1,7 @@
+import { desc, eq, sum } from 'drizzle-orm';
+
 import { db } from '../drizzle/db';
 import { tokenUsage } from '../drizzle/schema';
-import { eq, sum, desc } from 'drizzle-orm';
 import type { NewTokenUsage, TokenUsage } from '../drizzle/schema';
 
 export interface RecordTokenUsageParams {
@@ -13,9 +14,6 @@ export interface RecordTokenUsageParams {
     operationType?: string;
 }
 
-/**
- * Record a token usage entry for a given user and operation
- */
 export async function recordTokenUsage(params: RecordTokenUsageParams): Promise<TokenUsage> {
     const record: NewTokenUsage = {
         userId: params.userId,
@@ -31,9 +29,6 @@ export async function recordTokenUsage(params: RecordTokenUsageParams): Promise<
     return inserted;
 }
 
-/**
- * Get total token usage aggregated per user
- */
 export async function getTotalTokenUsageByUser(userId: string): Promise<{
     inputTokens: number;
     outputTokens: number;
@@ -55,11 +50,8 @@ export async function getTotalTokenUsageByUser(userId: string): Promise<{
     };
 }
 
-/**
- * Get recent token usage records for a user
- */
 export async function getRecentTokenUsage(userId: string, limit = 20): Promise<TokenUsage[]> {
-    return await db
+    return db
         .select()
         .from(tokenUsage)
         .where(eq(tokenUsage.userId, userId))

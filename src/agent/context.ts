@@ -1,4 +1,8 @@
-export interface UserContext {
+export interface AppContext {
     userId: string;
-    name: string;
+    userName: string;
+    channel: 'telegram';
+    telegramChatId: string;
+    telegramUserId: string;
+    locale?: string;
 }

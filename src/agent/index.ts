@@ -1,37 +1,27 @@
-import { Agent } from '@openai/agents';
+import { Agent, type InputGuardrail, type Tool } from '@openai/agents';
 
-import { UserContext } from './context';
 import { AGENT_MODEL } from './config';
-import {
-    currentDateTimeTool,
-    fetchWeatherInformation
-} from './tool';
-import { buildAgentInstructions } from './prompt';
-import { weatherAgentGuardrail } from './guardrail';
-import { recordTokenUsage } from '../services/tokenUsage.service';
+import { AppContext } from './context';
+import { createWeatherExample } from '../examples/weather';
+import { recordTokenUsage } from '../persistence/token-usage.service';
 
+const weatherExample = createWeatherExample();
 
-
-
-export const weatherAgent = new Agent<UserContext>({
-    name: 'Weather Agent',
-    instructions: buildAgentInstructions,
+export const primaryAgent = new Agent<AppContext>({
+    name: weatherExample.name,
+    instructions: weatherExample.instructions,
     model: AGENT_MODEL,
-    tools: [
-        currentDateTimeTool,
-        fetchWeatherInformation
-    ],
-    inputGuardrails: [weatherAgentGuardrail],
+    tools: weatherExample.tools as Tool<AppContext>[],
+    inputGuardrails: weatherExample.inputGuardrails as InputGuardrail[],
 });
 
-weatherAgent.on('agent_start', (ctx, agent) => {
+primaryAgent.on('agent_start', (ctx) => {
     console.log(`[Agent] Started for user: ${ctx.context.userId}`);
 });
 
-weatherAgent.on('agent_end', async (ctx, output) => {
+primaryAgent.on('agent_end', async (ctx) => {
     console.log(`[Agent] Ended - Tokens: ${ctx.usage.totalTokens} (in: ${ctx.usage.inputTokens}, out: ${ctx.usage.outputTokens})`);
 
-    // Record token usage to database
     try {
         await recordTokenUsage({
             userId: ctx.context.userId,
@@ -46,13 +36,13 @@ weatherAgent.on('agent_end', async (ctx, output) => {
     }
 });
 
-weatherAgent.on("agent_tool_start", (ctx, tool) => {
+primaryAgent.on('agent_tool_start', (_ctx, tool) => {
     console.log(`[Tool] ${tool.name} started`);
 });
 
-weatherAgent.on("agent_tool_end", async (ctx, tool, output) => {
+primaryAgent.on('agent_tool_end', async (ctx, tool) => {
     console.log(`[Tool] ${tool.name} ended - Tokens: ${ctx.usage.totalTokens}`);
-    // Record token usage to database
+
     try {
         await recordTokenUsage({
             userId: ctx.context.userId,
@@ -60,7 +50,7 @@ weatherAgent.on("agent_tool_end", async (ctx, tool, output) => {
             outputTokens: ctx.usage.outputTokens,
             totalTokens: ctx.usage.totalTokens,
             model: AGENT_MODEL,
-            operationType: "tool_call",
+            operationType: 'tool_call',
         });
     } catch (error) {
         console.error('[Agent] Failed to record token usage:', error);

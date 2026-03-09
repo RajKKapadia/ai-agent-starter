@@ -1,9 +1,4 @@
-import { UserContext } from './agent/context';
-
-/**
- * Telegram Update types
- * Based on Telegram Bot API documentation
- */
+import { AppContext } from './agent/context';
 
 export interface TelegramUser {
     id: number;
@@ -31,13 +26,6 @@ export interface TelegramPhotoSize {
     file_size?: number;
 }
 
-export interface TelegramFile {
-    file_id: string;
-    file_unique_id: string;
-    file_size?: number;
-    file_path?: string;
-}
-
 export interface TelegramMessage {
     message_id: number;
     from?: TelegramUser;
@@ -46,23 +34,6 @@ export interface TelegramMessage {
     text?: string;
     caption?: string;
     photo?: TelegramPhotoSize[];
-    entities?: Array<{
-        type: string;
-        offset: number;
-        length: number;
-    }>;
-    document?: { file_id: string };
-    video?: { file_id: string };
-    voice?: { file_id: string };
-    audio?: { file_id: string };
-    sticker?: { file_id: string };
-    animation?: { file_id: string };
-    video_note?: { file_id: string };
-    contact?: { phone_number: string };
-    location?: { latitude: number; longitude: number };
-    venue?: { location: unknown };
-    poll?: { id: string };
-    dice?: { emoji: string };
 }
 
 export interface TelegramCallbackQuery {
@@ -79,12 +50,9 @@ export interface TelegramUpdate {
     callback_query?: TelegramCallbackQuery;
 }
 
-/**
- * Pending approval state stored in Redis
- */
-export interface TelegramPendingState {
+export interface PendingApprovalState {
     serializedState: string;
-    userContext: UserContext;
+    userContext: AppContext;
     chatId: number;
     messageId?: number;
     timestamp: number;
@@ -92,18 +60,6 @@ export interface TelegramPendingState {
     toolArguments: unknown;
 }
 
-/**
- * Callback data structure for inline buttons
- * Format: action:approvalId
- */
-export interface TelegramApprovalCallback {
-    action: 'approve' | 'reject';
-    approvalId: string;
-}
-
-/**
- * Response structure for Telegram API sendMessage
- */
 export interface TelegramSendMessageRequest {
     chat_id: number | string;
     text: string;
@@ -112,9 +68,6 @@ export interface TelegramSendMessageRequest {
     reply_to_message_id?: number;
 }
 
-/**
- * Inline keyboard markup for buttons
- */
 export interface TelegramInlineKeyboardMarkup {
     inline_keyboard: TelegramInlineKeyboardButton[][];
 }
@@ -125,9 +78,6 @@ export interface TelegramInlineKeyboardButton {
     url?: string;
 }
 
-/**
- * Response structure for answering callback queries
- */
 export interface TelegramAnswerCallbackQueryRequest {
     callback_query_id: string;
     text?: string;
