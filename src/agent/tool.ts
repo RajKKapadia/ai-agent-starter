@@ -92,5 +92,6 @@ export const fetchWeatherInformation = tool({
     },
     async errorFunction(): Promise<string> {
         return `An error occurred while fetching weather data. Please try again later.`;
-    }
+    },
+    needsApproval: true
 });

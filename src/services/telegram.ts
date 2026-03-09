@@ -1,251 +1,227 @@
+import { RunResult, RunState, run } from '@openai/agents';
+import { v4 as uuidv4 } from 'uuid';
+
+import { weatherAgent } from '../agent';
+import { UserContext } from '../agent/context';
+import { CustomSession } from '../agent/session';
 import { appConfig } from '../env';
+import {
+    TelegramAnswerCallbackQueryRequest,
+    TelegramCallbackQuery,
+    TelegramPendingState,
+    TelegramSendMessageRequest,
+} from '../types';
+import { deletePendingState, getPendingState, storePendingState } from './redis';
 
 const TELEGRAM_API_BASE = `https://api.telegram.org/bot${appConfig.TELEGRAM_BOT_TOKEN}`;
+const PENDING_APPROVAL_TTL_SECONDS = 600;
 
-export interface TelegramMessage {
+type TelegramApiResponse<T> = {
+    ok: boolean;
+    result: T;
+    description?: string;
+};
+
+type TelegramSendMessageResult = {
     message_id: number;
-    from?: {
-        id: number;
-        first_name: string;
-        last_name?: string;
-        username?: string;
-    };
-    chat: {
-        id: number;
-        type: string;
-        first_name?: string;
-        username?: string;
-    };
-    text?: string;
-    date: number;
-}
+};
 
-export interface TelegramUpdate {
-    update_id: number;
-    message?: TelegramMessage;
-}
+type TelegramEditMessageRequest = TelegramSendMessageRequest & {
+    message_id: number;
+};
+
+type WeatherRunResult = RunResult<any, any>;
 
 export interface SendMessageOptions {
     parse_mode?: 'Markdown' | 'MarkdownV2' | 'HTML';
     reply_to_message_id?: number;
+    reply_markup?: TelegramSendMessageRequest['reply_markup'];
 }
 
-/**
- * Send a text message to a Telegram chat
- */
+async function telegramRequest<TResponse>(method: string, payload: unknown): Promise<TResponse> {
+    const response = await fetch(`${TELEGRAM_API_BASE}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await response.json() as TelegramApiResponse<TResponse>;
+    if (!response.ok || !data.ok) {
+        throw new Error(`Telegram ${method} failed: ${JSON.stringify(data)}`);
+    }
+
+    return data.result;
+}
+
 export async function sendMessage(
     chatId: number,
     text: string,
     options: SendMessageOptions = {}
-): Promise<void> {
-    const response = await fetch(`${TELEGRAM_API_BASE}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            chat_id: chatId,
-            text,
-            ...options,
-        }),
+): Promise<TelegramSendMessageResult> {
+    return telegramRequest<TelegramSendMessageResult>('sendMessage', {
+        chat_id: chatId,
+        text,
+        ...options,
     });
-
-    if (!response.ok) {
-        const error = await response.json();
-        throw new Error(`Telegram sendMessage failed: ${JSON.stringify(error)}`);
-    }
 }
 
-/**
- * Send a typing action indicator to a chat
- */
 export async function sendTypingAction(chatId: number): Promise<void> {
-    await fetch(`${TELEGRAM_API_BASE}/sendChatAction`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    await telegramRequest('sendChatAction', {
+        chat_id: chatId,
+        action: 'typing',
     });
 }
 
-/**
- * Handle interruptions by sending approval request with inline keyboard
- * @param result - Agent run result containing interruptions
- * @param chatId - Telegram chat ID
- * @param userContext - User context
- * @param startIndex - Index of interruption to handle (for sequential processing)
- */
-async function handleInterruptions(
-    result: any,
+async function editTelegramMessage(payload: TelegramEditMessageRequest): Promise<void> {
+    await telegramRequest('editMessageText', payload);
+}
+
+async function answerCallbackQuery(payload: TelegramAnswerCallbackQueryRequest): Promise<void> {
+    await telegramRequest('answerCallbackQuery', payload);
+}
+
+function buildPendingStateKey(chatId: number, approvalId: string): string {
+    return `pending:telegram:${chatId}:${approvalId}`;
+}
+
+function formatToolArgs(toolArguments: unknown): string {
+    return JSON.stringify(toolArguments, null, 2);
+}
+
+export async function handleInterruptions(
+    result: WeatherRunResult,
     chatId: number,
-    userContext: any,
-    startIndex: number = 0
+    userContext: UserContext
 ): Promise<void> {
-    // Generate unique approval ID
+    const interruption = result.interruptions[0];
+    if (!interruption) {
+        return;
+    }
+
     const approvalId = uuidv4();
-
-    // Get current interruption and calculate total
-    const interruption = result.interruptions[startIndex];
-    const toolName = interruption.name;
-    const toolArgs = JSON.stringify(interruption.arguments);
-    const totalInterruptions = result.interruptions.length;
-
-    // Store pending state in Redis
+    const toolName = interruption.name ?? 'unknown_tool';
+    const toolArguments = interruption.arguments;
     const pendingState: TelegramPendingState = {
-        serializedState: JSON.stringify(result.state),
-        userContext: userContext,
-        interruptions: result.interruptions,
-        chatId: chatId,
+        serializedState: result.state.toString(),
+        userContext,
+        chatId,
         timestamp: Date.now(),
-        toolName: toolName,
-        toolArguments: interruption.arguments,
-        currentInterruptionIndex: startIndex,
+        toolName,
+        toolArguments,
     };
 
-    const redisKey = `pending:telegram:${chatId}:${approvalId}`;
-    await storePendingState(redisKey, JSON.stringify(pendingState), 600); // 10 minutes TTL
+    const redisKey = buildPendingStateKey(chatId, approvalId);
+    await storePendingState(redisKey, JSON.stringify(pendingState), PENDING_APPROVAL_TTL_SECONDS);
 
-    // Build approval message with progress counter
-    let approvalText = `🔔 Approval Required`;
-    if (totalInterruptions > 1) {
-        approvalText += ` (${startIndex + 1} of ${totalInterruptions})`;
-    }
-    approvalText += `\n\n`;
-    approvalText += `I would like to execute: ${toolName}\n`;
-    approvalText += `Arguments: ${toolArgs}\n\n`;
-    approvalText += `Do you approve this action?`;
+    const sentMessage = await sendMessage(
+        chatId,
+        [
+            'Approval required',
+            '',
+            `Tool: ${toolName}`,
+            `Arguments: ${formatToolArgs(toolArguments)}`,
+            '',
+            'Do you approve this action?',
+        ].join('\n'),
+        {
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: 'Approve', callback_data: `approve:${approvalId}` },
+                    { text: 'Reject', callback_data: `reject:${approvalId}` },
+                ]],
+            },
+        }
+    );
 
-    // Send message with inline keyboard
-    const sentMessage = await sendTelegramMessage({
-        chat_id: chatId,
-        text: approvalText,
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [[
-                { text: '✅ Approve', callback_data: `approve:${approvalId}` },
-                { text: '❌ Reject', callback_data: `reject:${approvalId}` },
-            ]],
-        },
-    });
-
-    // Update stored state with message ID for later editing
-    pendingState.messageId = sentMessage.result.message_id;
-    await storePendingState(redisKey, JSON.stringify(pendingState), 600);
+    pendingState.messageId = sentMessage.message_id;
+    await storePendingState(redisKey, JSON.stringify(pendingState), PENDING_APPROVAL_TTL_SECONDS);
 }
 
-/**
- * Handle callback query (button click)
- */
 export async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery): Promise<void> {
     const chatId = callbackQuery.message?.chat.id;
     const messageId = callbackQuery.message?.message_id;
     const callbackData = callbackQuery.data;
 
-    if (!chatId || !callbackData) {
+    if (!chatId || !messageId || !callbackData) {
         return;
     }
 
     try {
-        // Parse callback data: "approve:approvalId" or "reject:approvalId"
         const [action, approvalId] = callbackData.split(':');
-
-        if (!action || !approvalId || !['approve', 'reject'].includes(action)) {
+        if (!approvalId || (action !== 'approve' && action !== 'reject')) {
             throw new Error('Invalid callback data');
         }
 
-        // Answer callback query immediately (removes loading state)
         await answerCallbackQuery({
             callback_query_id: callbackQuery.id,
-            text: action === 'approve' ? 'Approved!' : 'Rejected!',
+            text: action === 'approve' ? 'Approval recorded' : 'Rejection recorded',
         });
 
-        // Retrieve pending state from Redis
-        const redisKey = `pending:telegram:${chatId}:${approvalId}`;
+        const redisKey = buildPendingStateKey(chatId, approvalId);
         const pendingStateStr = await getPendingState(redisKey);
 
         if (!pendingStateStr) {
-            // State expired or not found
             await editTelegramMessage({
                 chat_id: chatId,
                 message_id: messageId,
-                text: '⏰ This approval request has expired. Please try your request again.',
-                parse_mode: 'HTML',
+                text: 'This approval request has expired. Send the command again.',
             });
             return;
         }
 
-        const pendingState: TelegramPendingState = JSON.parse(pendingStateStr);
+        const pendingState = JSON.parse(pendingStateStr) as TelegramPendingState;
+        const state = await RunState.fromString(weatherAgent, pendingState.serializedState);
 
-        // Deserialize run state
-        const state = await RunState.fromString(caloryTrackingAgent, pendingState.serializedState);
-
-        // Apply approval or rejection for CURRENT interruption only
-        const currentInterruption = pendingState.interruptions[pendingState.currentInterruptionIndex];
-        if (action === 'approve') {
-            state.approve(currentInterruption);
-        } else {
-            state.reject(currentInterruption);
+        const interruption = state.getInterruptions()[0];
+        if (!interruption) {
+            await editTelegramMessage({
+                chat_id: chatId,
+                message_id: messageId,
+                text: 'This approval request is no longer pending.',
+            });
+            await deletePendingState(redisKey);
+            return;
         }
 
-        // Check if there are more interruptions to handle
-        const nextIndex = pendingState.currentInterruptionIndex + 1;
-        const hasMoreInterruptions = nextIndex < pendingState.interruptions.length;
+        if (action === 'approve') {
+            state.approve(interruption);
+        } else {
+            state.reject(interruption, {
+                message: 'The Telegram user rejected this tool call.',
+            });
+        }
 
-        // Edit the approval message to show decision
-        const actionEmoji = action === 'approve' ? '✅' : '❌';
-        const actionText = action === 'approve' ? 'Approved' : 'Rejected';
         await editTelegramMessage({
             chat_id: chatId,
             message_id: messageId,
-            text: `${actionEmoji} ${actionText}\n\nTool: ${pendingState.toolName}\nArguments: ${JSON.stringify(pendingState.toolArguments)}`,
-            parse_mode: 'HTML',
+            text: [
+                action === 'approve' ? 'Approved' : 'Rejected',
+                '',
+                `Tool: ${pendingState.toolName}`,
+                `Arguments: ${formatToolArgs(pendingState.toolArguments)}`,
+            ].join('\n'),
         });
 
-        if (hasMoreInterruptions) {
-            // Don't resume yet, show next interruption
-            const nextResult = {
-                state: state,
-                interruptions: pendingState.interruptions,
-            };
+        await deletePendingState(redisKey);
+        await sendTypingAction(chatId);
 
-            // Show next interruption
-            await handleInterruptions(nextResult, chatId, pendingState.userContext, nextIndex);
+        const resumeResult = await run(weatherAgent, state as RunState<UserContext, typeof weatherAgent>, {
+            context: pendingState.userContext,
+            stream: false,
+            session: new CustomSession({ userId: pendingState.userContext.userId }),
+        });
 
-            // Clean up current Redis state
-            await deletePendingState(redisKey);
-        } else {
-            // All interruptions handled, resume agent execution
-            // Show typing indicator while agent processes
-            await sendChatAction({
-                chat_id: chatId,
-                action: 'typing',
-            });
-
-            const session = new CustomSession({ userId: pendingState.userContext.userId });
-
-            const resumeResult = await run(caloryTrackingAgent, state, {
-                context: pendingState.userContext,
-                stream: false,
-                session: session,
-            });
-
-            // Check for more interruptions from agent (new ones, not sequential)
-            if (resumeResult.interruptions && resumeResult.interruptions.length > 0) {
-                await handleInterruptions(resumeResult, chatId, pendingState.userContext);
-            } else {
-                // Send final result
-                await sendTelegramMessage({
-                    chat_id: chatId,
-                    text: String(resumeResult.finalOutput || 'Done!'),
-                    parse_mode: 'HTML',
-                });
-            }
-
-            // Clean up Redis state
-            await deletePendingState(redisKey);
+        if (resumeResult.interruptions.length > 0) {
+            await handleInterruptions(resumeResult as WeatherRunResult, chatId, pendingState.userContext);
+            return;
         }
+
+        await sendMessage(chatId, String(resumeResult.finalOutput ?? 'Done.'));
     } catch (error) {
         console.error('Error handling callback query:', error);
         await answerCallbackQuery({
             callback_query_id: callbackQuery.id,
-            text: 'Error processing your response',
+            text: 'Failed to process approval',
             show_alert: true,
         });
     }
